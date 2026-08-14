@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSeek Harness 设置</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: radial-gradient(1000px 500px at 50% -10%, #16283f 0%, #0a1220 60%, #060a12 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+      color: #dbe4f0;
+      padding: 22px;
+    }
+    h1 { font-size: 18px; margin: 0 0 6px; font-weight: 650; }
+    .desc { font-size: 12px; color: #8fa3bb; margin: 0 0 18px; line-height: 1.6; }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .row { display: flex; gap: 8px; }
+    input[type="text"] {
+      flex: 1;
+      background: #0d1826;
+      border: 1px solid #2a3d55;
+      color: #e8f0fb;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: #4d6bfe; }
+    button {
+      border: 1px solid #2a3d55;
+      background: #14233a;
+      color: #dbe4f0;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { background: #1b2f4c; }
+    button.primary {
+      background: #4d6bfe;
+      border-color: #4d6bfe;
+      color: #fff;
+      font-weight: 600;
+    }
+    button.primary:hover { background: #5f7bff; }
+    .hint { font-size: 11px; color: #6f83a0; margin: 6px 0 0; line-height: 1.5; }
+    .actions { display: flex; gap: 8px; margin-top: 18px; }
+    #status {
+      margin-top: 14px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #7ee2a8;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #status.error { color: #fecaca; }
+  </style>
+</head>
+<body>
+  <h1>设置</h1>
+  <p class="desc">这两个设置用于让桌面程序找到和终端里一致的会话。保存后，若服务由本程序启动，会自动重启服务并刷新主界面（正在进行的会话会中断）。</p>
+
+  <div class="field">
+    <label>DSH_HOME（.dsh 数据目录）</label>
+    <div class="row">
+      <input id="dshHome" type="text" placeholder="留空 = 默认 ~/.dsh" spellcheck="false" />
+      <button id="browseHome">浏览…</button>
+    </div>
+    <p class="hint">如果你把 C 盘的 .dsh 文件夹迁移到了其他盘（比如 D 盘），请选择迁移后的 .dsh 目录；否则历史会话会“看不到”。</p>
+  </div>
+
+  <div class="field">
+    <label>工作目录（workspace）</label>
+    <div class="row">
+      <input id="workspace" type="text" placeholder="留空 = 用户主目录" spellcheck="false" />
+      <button id="browseWorkspace">浏览…</button>
+    </div>
+    <p class="hint">会话按“启动 dsh 时所在目录”分组。填你平时在终端里运行 npx 时所在的目录，历史会话就会显示在同一个工作区。</p>
+  </div>
+
+  <div class="actions">
+    <button id="save" class="primary">保存</button>
+    <button id="clear">清空</button>
+  </div>
+  <p id="status"></p>
+
+  <script>
+    const invoke = window.__TAURI__.core.invoke;
+    const $ = (id) => document.getElementById(id);
+
+    async function load() {
+      try {
+        const s = await invoke('get_settings');
+        $('dshHome').value = s.dshHome ?? '';
+        $('workspace').value = s.workspace ?? '';
+      } catch (e) {
+        showStatus('读取设置失败：' + e, true);
+      }
+    }
+
+    async function pick(id) {
+      try {
+        const p = await invoke('pick_folder');
+        if (p) $(id).value = p;
+      } catch (e) {
+        showStatus('选择文件夹失败：' + e, true);
+      }
+    }
+
+    async function save() {
+      const dshHome = $('dshHome').value.trim();
+      const workspace = $('workspace').value.trim();
+      try {
+        const msg = await invoke('save_settings', {
+          dshHome: dshHome || null,
+          workspace: workspace || null,
+        });
+        showStatus(msg, false);
+        load();
+      } catch (e) {
+        showStatus('保存失败：' + e, true);
+      }
+    }
+
+    function showStatus(text, isError) {
+      const el = $('status');
+      el.textContent = text;
+      el.className = isError ? 'error' : '';
+    }
+
+    $('browseHome').addEventListener('click', () => pick('dshHome'));
+    $('browseWorkspace').addEventListener('click', () => pick('workspace'));
+    $('save').addEventListener('click', save);
+    $('clear').addEventListener('click', () => {
+      $('dshHome').value = '';
+      $('workspace').value = '';
+      $('status').textContent = '';
+    });
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "默认能力：主窗口加载 DeepSeek Harness Web UI（走 HTTP，无需 IPC 权限）；设置窗口只调用本应用自定义命令。",
+  "windows": ["main", "settings"],
+  "permissions": ["core:default"]
+}

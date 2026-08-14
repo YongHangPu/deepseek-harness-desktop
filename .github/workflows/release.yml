@@ -1,0 +1,96 @@
+# GitHub Actions：跨平台 × 多架构自动构建并发布安装包。
+#
+# 触发方式（推荐用标签）：
+#   1. 先修改 src-tauri/tauri.conf.json 里的 "version"（例如 0.1.1）
+#   2. git tag v0.1.1 && git push origin v0.1.1
+#   3. 构建完成后到 GitHub Releases 确认草稿（releaseDraft: true）并发布
+#
+# 产物（全部自动上传到同一个 Release）：
+#   Windows：x64 / x86 / arm64 的 NSIS（setup.exe）+ MSI
+#   macOS：  x86_64 / aarch64 的 .app（压缩包）与 .dmg
+#   Linux：  x86_64 / aarch64 的 .deb、.rpm、.AppImage
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- Windows ----
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: windows-latest
+            target: i686-pc-windows-msvc
+          - platform: windows-latest
+            target: aarch64-pc-windows-msvc
+          # ---- macOS ----
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+          # ---- Linux ----
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          # 原生 ARM64 Linux runner（公开仓库可用；若你的仓库不可用，
+          # 删除此条目即可，或改用 cross 容器交叉编译）
+          - platform: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: 安装 Rust 工具链与目标架构
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 安装 Linux 系统依赖
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+
+      - name: 安装 npm 依赖（@tauri-apps/cli）
+        run: npm install
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DeepSeek Harness __VERSION__'
+          releaseBody: |
+            由 GitHub Actions 自动构建（Windows / macOS / Linux，含 x64、x86、arm64 架构）。
+
+            **Windows**
+            - `*_x64-setup.exe` / `*_x86-setup.exe` / `*_arm64-setup.exe` —— NSIS 安装程序（当前用户，免管理员）
+            - `*.msi` —— MSI 安装程序（按机器安装，需管理员）
+
+            **macOS**
+            - `*.app`（压缩包）与 `*.dmg`，分 `x64` 与 `aarch64` 两个架构
+
+            **Linux**
+            - `.deb` / `.rpm` / `.AppImage`，分 `amd64` 与 `arm64` 两个架构
+
+            安装后可从开始菜单 / 桌面快捷方式 / 应用列表启动，或在托盘图标里打开设置。
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}

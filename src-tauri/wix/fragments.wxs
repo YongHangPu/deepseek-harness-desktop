@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 自定义安装界面的附加片段：
+     checkIcon = 完成页的“蓝色圆形对勾”位图（由 scripts/make-installer-images.mjs 生成）。 -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+        <Binary Id="checkIcon" SourceFile="../../../../icons/installer-check.bmp" />
+        <Binary Id="techBg" SourceFile="../../../../icons/installer-bg.bmp" />
+    </Fragment>
+</Wix>
