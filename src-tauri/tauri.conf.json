@@ -50,9 +50,6 @@
           }
         },
         "template": "wix/main.wxs",
-        "fragmentPaths": [
-          "wix/fragments.wxs"
-        ],
         "bannerPath": "icons/installer-banner.bmp",
         "dialogImagePath": "icons/installer-dialog.bmp"
       }

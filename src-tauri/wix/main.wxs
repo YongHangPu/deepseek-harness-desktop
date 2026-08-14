@@ -87,13 +87,16 @@
         <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
         <CustomAction Id="LaunchApplication" Impersonate="yes" FileKey="Path" ExeCommand="[LAUNCHAPPARGS]" Return="asyncNoWait" />
 
-        <!-- 应用图标二进制：欢迎页的 Icon 控件引用 -->
+        <!-- 应用图标二进制：欢迎页/完成页的 Icon 控件引用 -->
         <Binary Id="appIcon" SourceFile="{{icon_path}}" />
+        <!-- 科技感背景：复用对话框配图（WixUIDialogBmp），由 Tauri 注入绝对路径，
+             因此原生与交叉编译（x86/arm64 等）都能正确解析 -->
+        <Binary Id="techBg" SourceFile="{{dialog_image_path}}" />
 
         <!-- ==================== 自定义安装界面（DeepSeek 风格） ====================
              白色底 + 主色蓝 #4D6BFE 的品牌横幅；欢迎/完成页居中构图，其余页
              左侧大留白排版。错误、取消、磁盘不足等系统对话框复用 WiX 标准
-             （WixUI_Common）。checkIcon（完成页对勾）由 wix/fragments.wxs 提供。 -->
+             （WixUI_Common）。全部位图都通过 Tauri 注入的绝对路径引用。 -->
         <UI>
             <!-- 字体：微软雅黑；WixUI_Font_* 供 wixlib 标准对话框引用，DshFont_* 为自定义对话框使用 -->
             <TextStyle Id="WixUI_Font_Normal" FaceName="Microsoft YaHei UI" Size="8" />
@@ -226,7 +229,7 @@
                 <Control Id="BannerLine" Type="Line" X="0" Y="52" Width="440" Height="0" />
                 <Control Id="BottomLine" Type="Line" X="0" Y="262" Width="440" Height="0" />
 
-                <Control Id="Check" Type="Bitmap" X="200" Y="58" Width="40" Height="40" TabSkip="no" Text="checkIcon" />
+                <Control Id="Check" Type="Icon" X="200" Y="58" Width="40" Height="40" FixedSize="yes" IconSize="48" TabSkip="no" Text="appIcon" />
                 <Control Id="Title" Type="Text" X="160" Y="102" Width="120" Height="32" Transparent="yes" NoPrefix="yes" Text="{\DshFont_Hero}安装完成" />
                 <Control Id="Description" Type="Text" X="70" Y="140" Width="300" Height="18" Transparent="yes" NoPrefix="yes" Text="{{product_name}} 已成功安装到你的电脑。" />
                 <Control Id="Description2" Type="Text" X="70" Y="162" Width="300" Height="18" Transparent="yes" NoPrefix="yes" Text="你现在可以从开始菜单或桌面快捷方式启动它。" />

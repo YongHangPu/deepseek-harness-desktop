@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "DeepSeek DeliverWeb UI桌面启动器（Tauri 2）。双击启动' npx @deepseek-ai/dsh web '并在本地窗口中打开Web UI。",
   "scripts": {
+    "tauri": "tauri",
     "build": "tauri build",
     "build:exe": "cargo build --release --manifest-path src-tauri/Cargo.toml",
     "bump-version": "node scripts/bump-version.mjs",
