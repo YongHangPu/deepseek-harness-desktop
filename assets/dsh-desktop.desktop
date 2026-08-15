@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=DeepSeek Harness
+Comment=DeepSeek Harness desktop launcher
+Exec=dsh-desktop
+Icon=dsh-desktop
+Terminal=false
+Type=Application
+Categories=Development;

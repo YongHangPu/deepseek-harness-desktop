@@ -6,9 +6,10 @@
 #   3. 构建完成后到 GitHub Releases 确认草稿（releaseDraft: true）并发布
 #
 # 产物（全部自动上传到同一个 Release）：
-#   Windows：x64 / x86 / arm64 的 NSIS（setup.exe）+ MSI
-#   macOS：  x86_64 / aarch64 的 .app（压缩包）与 .dmg
-#   Linux：  x86_64 / aarch64 的 .deb、.rpm、.AppImage
+#   Windows：x64 / x86 / arm64 的 NSIS 安装程序（setup.exe）+ MSI + 便携 zip
+#   macOS：  通用（universal）dmg / app，同时支持 Intel 与 Apple Silicon
+#   Linux：  amd64 / arm64 的 deb、rpm、AppImage + 便携 tar.gz
+#   可选签名：若仓库配置了 MINISIGN_SECRET_KEY secret，则对所有产物生成 .minisig 签名
 name: release
 
 on:
@@ -29,29 +30,33 @@ jobs:
           # ---- Windows ----
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
+            arch: x64
           - platform: windows-latest
             target: i686-pc-windows-msvc
+            arch: x86
           - platform: windows-latest
             target: aarch64-pc-windows-msvc
-          # ---- macOS ----
+            arch: arm64
+          # ---- macOS（单次构建产出 universal dmg/app）----
           - platform: macos-latest
-            target: aarch64-apple-darwin
-          - platform: macos-latest
-            target: x86_64-apple-darwin
+            target: universal-apple-darwin
+            rustTargets: aarch64-apple-darwin,x86_64-apple-darwin
           # ---- Linux ----
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            arch: amd64
           # 原生 ARM64 Linux runner（公开仓库可用；若你的仓库不可用，
           # 删除此条目即可，或改用 cross 容器交叉编译）
           - platform: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            arch: arm64
     runs-on: ${{ matrix.platform }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -59,7 +64,7 @@ jobs:
       - name: 安装 Rust 工具链与目标架构
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rustTargets || matrix.target }}
 
       - name: 安装 Linux 系统依赖
         if: startsWith(matrix.platform, 'ubuntu')
@@ -70,7 +75,8 @@ jobs:
       - name: 安装 npm 依赖（@tauri-apps/cli）
         run: npm install
 
-      - name: 构建并发布
+      - name: 构建并发布（NSIS/MSI、dmg、deb/rpm/AppImage）
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,14 +89,75 @@ jobs:
             **Windows**
             - `*_x64-setup.exe` / `*_x86-setup.exe` / `*_arm64-setup.exe` —— NSIS 安装程序（当前用户，免管理员）
             - `*.msi` —— MSI 安装程序（按机器安装，需管理员）
+            - `*_windows-*.zip` —— 免安装便携包（解压后双击 dsh-desktop.exe 即可）
 
             **macOS**
-            - `*.app`（压缩包）与 `*.dmg`，分 `x64` 与 `aarch64` 两个架构
+            - `*_universal.dmg` —— 通用安装包，同时支持 Intel 与 Apple Silicon
 
             **Linux**
-            - `.deb` / `.rpm` / `.AppImage`，分 `amd64` 与 `arm64` 两个架构
+            - `.deb` / `.rpm` / `.AppImage` —— 分 `amd64` 与 `arm64` 两个架构
+            - `*_linux-*.tar.gz` —— 免安装便携包（解压后运行 ./dsh-desktop）
 
             安装后可从开始菜单 / 桌面快捷方式 / 应用列表启动，或在托盘图标里打开设置。
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      - name: 打包 Windows 便携 zip
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = node -p "require('./package.json').version"
+          $exe = "src-tauri/target/${{ matrix.target }}/release/dsh-desktop.exe"
+          $zip = "DeepSeek Harness_${v}_windows-${{ matrix.arch }}.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip
+          gh release upload "${{ github.ref_name }}" $zip --clobber
+
+      - name: 打包 Linux 便携 tar.gz
+        if: startsWith(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          bin=$(find src-tauri/target -path "*/${{ matrix.target }}/release/dsh-desktop" -type f | head -n 1)
+          pkg="deepseek-harness_${v}_linux-${{ matrix.arch }}"
+          mkdir -p "$pkg"
+          cp "$bin" "$pkg/dsh-desktop"
+          cp assets/dsh-desktop.desktop "$pkg/dsh-desktop.desktop"
+          cp src-tauri/icons/128x128.png "$pkg/dsh-desktop.png"
+          chmod +x "$pkg/dsh-desktop"
+          tar czf "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" "$pkg"
+          gh release upload "${{ github.ref_name }}" "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" --clobber
+
+  # 可选：为所有产物生成 minisign 签名（.minisig）。
+  # 启用方法：本地用 minisign -G 生成密钥对，把“私钥文件内容”存入
+  # 仓库 Secrets（名称 MINISIGN_SECRET_KEY），并把公钥附在 README/发布说明里。
+  sign:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') && secrets.MINISIGN_SECRET_KEY != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 安装 minisign
+        run: |
+          curl -fsSL -o minisign.tar.gz https://github.com/aead/minisign/releases/download/0.12/minisign-linux.tar.gz
+          tar xzf minisign.tar.gz
+          sudo cp "$(find . -name minisign -type f | head -n 1)" /usr/local/bin/minisign
+
+      - name: 下载产物并生成签名
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p assets
+          gh release download "$TAG" --dir assets
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > minisign.key
+          chmod 600 minisign.key
+          for f in assets/DeepSeek*; do
+            [ -f "$f" ] || continue
+            minisign -S -m "$f" -s minisign.key -x "$f.minisig" -t "DeepSeek Harness $TAG" || continue
+            gh release upload "$TAG" "$f.minisig" --clobber
+          done
