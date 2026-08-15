@@ -77,8 +77,9 @@ pub fn run() {
             // 托盘图标：提供“打开主界面 / 设置… / 退出”入口。
             let open_item = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
+            let stop_item = MenuItem::with_id(app, "stop-server", "停止服务并退出", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_item, &settings_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&open_item, &settings_item, &stop_item, &quit_item])?;
             if let Some(icon) = app.default_window_icon().cloned() {
                 TrayIconBuilder::new()
                     .icon(icon)
@@ -87,6 +88,7 @@ pub fn run() {
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "open" => focus_main(app),
                         "settings" => open_settings(app),
+                        "stop-server" => stop_server_and_exit(app),
                         "quit" => app.exit(0),
                         _ => {}
                     })
@@ -400,6 +402,50 @@ fn kill_tree(child: &mut Child) {
 fn kill_tree(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// 托盘“停止服务并退出”：结束后台 dsh 服务（连同其子进程，如 MCP 服务器），
+/// 然后退出程序。
+///
+/// 用于“附着模式”下用户想连后台服务一起关掉的场景：程序只负责关闭自己启动
+/// 的服务，附着到外部服务时按设计不会自动关闭；这里通过端口找到监听进程，
+/// 用 `taskkill /T` 结束整棵进程树，再正常退出应用。
+fn stop_server_and_exit(app: &AppHandle) {
+    let state = app.state::<ServerState>();
+    {
+        let mut guard = state.child.lock().unwrap();
+        if let Some(mut child) = guard.take() {
+            kill_tree(&mut child);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // 附着模式下按端口找到监听进程（可能是其它实例遗留的服务），结束其进程树。
+        if let Some(pid) = tcp_listener_pid(PORT) {
+            let mut command = Command::new("taskkill");
+            command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let _ = command.output();
+        }
+    }
+    app.exit(0);
+}
+
+/// 通过 `netstat` 找到监听指定 TCP 端口的进程 PID（Windows）。
+#[cfg(target_os = "windows")]
+fn tcp_listener_pid(port: u16) -> Option<u32> {
+    let output = Command::new("netstat").args(["-ano", "-p", "tcp"]).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let needle = format!(":{} ", port);
+    for line in text.lines() {
+        if line.contains(&needle) && line.contains("LISTENING") {
+            return line.split_whitespace().last()?.parse::<u32>().ok();
+        }
+    }
+    None
 }
 
 /// 把主窗口取消最小化、显示并置为前台焦点。
