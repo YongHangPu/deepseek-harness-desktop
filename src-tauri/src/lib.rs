@@ -107,49 +107,84 @@ pub fn run() {
         });
 }
 
-/// 启动流程：必要时拉起服务，就绪后把窗口跳转到 Web GUI。
+/// 首次启动允许的最大尝试次数。
+///
+/// dsh 首次拉起时，其 profile 模块软链接（`~/.dsh/profiles/node_modules`）
+/// 可能因 npx 缓存目录被替换等原因短暂失效，表现为日志里的
+/// “plugin tree failed to load / Cannot find package …”。dsh 每次启动都会
+/// 自愈这些链接，因此失败后自动重试即可，无需用户手动关闭重开。
+const MAX_STARTUP_ATTEMPTS: u32 = 3;
+
+/// 启动流程：必要时拉起服务，就绪后把窗口跳转到 Web GUI；失败自动重试。
 fn startup(handle: AppHandle) {
     let state = handle.state::<ServerState>();
 
-    // 如果端口还没人在监听，就自己拉起 npx 服务。
-    if !is_up() {
-        match spawn_server() {
-            Ok(child) => {
-                *state.child.lock().unwrap() = Some(child);
-                *state.owned.lock().unwrap() = true;
+    for attempt in 1..=MAX_STARTUP_ATTEMPTS {
+        // 如果端口还没人在监听，就自己拉起 npx 服务。
+        if !is_up() {
+            match spawn_server() {
+                Ok(child) => {
+                    let mut guard = state.child.lock().unwrap();
+                    // 重试场景：先回收上一次已经退出的子进程，再记录新子进程。
+                    if let Some(mut old) = guard.take() {
+                        kill_tree(&mut old);
+                    }
+                    *guard = Some(child);
+                    *state.owned.lock().unwrap() = true;
+                }
+                Err(error) => {
+                    show_failure(
+                        &handle,
+                        &format!("无法启动 npx @deepseek-ai/dsh web：\n{error}"),
+                    );
+                    return;
+                }
             }
-            Err(error) => {
+        }
+
+        set_status(&handle, "DeepSeek Harness 正在启动，请稍候…");
+
+        match wait_until_ready(&state) {
+            WaitOutcome::Ready => {
+                let h = handle.clone();
+                // 窗口操作必须在主线程上执行。
+                let _ = handle.run_on_main_thread(move || {
+                    if let Some(window) = h.get_webview_window("main") {
+                        if let Ok(url) = url::Url::parse(WEB_URL) {
+                            let _ = window.navigate(url);
+                        }
+                    }
+                });
+                return;
+            }
+            WaitOutcome::Exited => {
+                if attempt >= MAX_STARTUP_ATTEMPTS {
+                    show_failure(
+                        &handle,
+                        "dsh web 进程多次启动失败，Web UI 未能启动。\n详见下方日志文件。",
+                    );
+                    return;
+                }
+                // 回收已退出的子进程，稍等片刻后自动重试：第二次启动会
+                // 修复 npx 缓存替换造成的 profile 软链接失效等问题。
+                let mut guard = state.child.lock().unwrap();
+                if let Some(mut old) = guard.take() {
+                    kill_tree(&mut old);
+                }
+                set_status(
+                    &handle,
+                    &format!("启动未成功，正在自动重试（{attempt}/{MAX_STARTUP_ATTEMPTS}）…"),
+                );
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            WaitOutcome::Timeout => {
                 show_failure(
                     &handle,
-                    &format!("无法启动 npx @deepseek-ai/dsh web：\n{error}"),
+                    "等待 Web UI 启动超时（3 分钟）。\n详见下方日志文件。",
                 );
                 return;
             }
         }
-    }
-
-    set_status(&handle, "DeepSeek Harness 正在启动，请稍候…");
-
-    match wait_until_ready(&state) {
-        WaitOutcome::Ready => {
-            let h = handle.clone();
-            // 窗口操作必须在主线程上执行。
-            let _ = handle.run_on_main_thread(move || {
-                if let Some(window) = h.get_webview_window("main") {
-                    if let Ok(url) = url::Url::parse(WEB_URL) {
-                        let _ = window.navigate(url);
-                    }
-                }
-            });
-        }
-        WaitOutcome::Exited => show_failure(
-            &handle,
-            "dsh web 进程提前退出，Web UI 未能启动。\n详见下方日志文件。",
-        ),
-        WaitOutcome::Timeout => show_failure(
-            &handle,
-            "等待 Web UI 启动超时（3 分钟）。\n详见下方日志文件。",
-        ),
     }
 }
 
