@@ -93,7 +93,18 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
           releaseName: 'DeepSeek Harness __VERSION__'
           releaseBody: |
-            由 GitHub Actions 自动构建（Windows / macOS / Linux，含 x64、x86、arm64 架构）。
+            DeepSeek Harness 桌面启动器：双击即启动 DeepSeek Harness Web GUI，无需终端。
+            （社区项目，与 DeepSeek 官方无隶属关系。）
+
+            ## ✨ 特性
+
+            - 双击即开：自动拉起 `npx @deepseek-ai/dsh web` 并在原生窗口打开；已有服务则直接附着
+            - 内置设置界面（托盘 → 设置）：可视化配置 `DSH_HOME` 与工作目录，迁移过 `.dsh` 也能找回历史会话
+            - 会话进行中关闭窗口会弹窗确认，避免误关
+            - 启动失败自动重试；托盘“停止服务并退出”一键清理后台服务
+            - 单实例运行；复用 npx 命令，官方发新版自动跟随 `latest`
+
+            ## 📦 选择安装包
 
             **Windows**
             - `*_x64-setup.exe` / `*_x86-setup.exe` / `*_arm64-setup.exe` —— NSIS 安装程序（当前用户，免管理员）
@@ -105,9 +116,28 @@ jobs:
 
             **Linux**
             - `.deb` / `.rpm` / `.AppImage` —— 分 `amd64` 与 `arm64` 两个架构
-            - `*_linux-*.tar.gz` —— 免安装便携包（解压后运行 ./dsh-desktop）
+            - `*_linux-*.tar.gz` —— 免安装便携包（解压后运行 `./dsh-desktop`）
 
-            安装后可从开始菜单 / 桌面快捷方式 / 应用列表启动，或在托盘图标里打开设置。
+            ## 🚀 使用前提
+
+            - 需要已安装 **Node.js**（程序通过 npx 启动 dsh，首次启动会自动下载）；如未安装，请从 <https://nodejs.org> 安装
+
+            ## ⚠️ 已知说明
+
+            - 安装包尚未做代码签名：Windows 首次运行如遇 SmartScreen 提示，请点“更多信息 → 仍要运行”；macOS 如遇 Gatekeeper 拦截，请右键应用选择“打开”
+            - Linux 的 AppImage 首次运行前需要 `chmod +x <文件名>.AppImage`
+            - 32 位架构仅提供 Windows x86 版本（macOS 已无 32 位；Tauri 2 不支持 32 位 Linux）
+
+            ## 🔗 链接
+
+            - 源码与问题反馈：<https://github.com/YongHangPu/deepseek-harness-desktop>
+            - 上游项目：<https://github.com/deepseek-ai/deepseek-harness>
+
+            ---
+
+            ## 📝 本次变更
+
+            > 发布前请在这里补充本版本的改动说明（草稿状态下可直接编辑）。
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
