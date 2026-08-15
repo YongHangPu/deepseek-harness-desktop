@@ -9,7 +9,6 @@
 #   Windows：x64 / x86 / arm64 的 NSIS 安装程序（setup.exe）+ MSI + 便携 zip
 #   macOS：  通用（universal）dmg / app，同时支持 Intel 与 Apple Silicon
 #   Linux：  amd64 / arm64 的 deb、rpm、AppImage + 便携 tar.gz
-#   可选签名：若仓库配置了 MINISIGN_SECRET_KEY secret，则对所有产物生成 .minisig 签名
 name: release
 
 on:
@@ -132,32 +131,3 @@ jobs:
           tar czf "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" "$pkg"
           gh release upload "${{ github.ref_name }}" "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" --clobber
 
-  # 可选：为所有产物生成 minisign 签名（.minisig）。
-  # 启用方法：本地用 minisign -G 生成密钥对，把“私钥文件内容”存入
-  # 仓库 Secrets（名称 MINISIGN_SECRET_KEY），并把公钥附在 README/发布说明里。
-  sign:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/') && secrets.MINISIGN_SECRET_KEY != ''
-    runs-on: ubuntu-22.04
-    steps:
-      - name: 安装 minisign
-        run: |
-          curl -fsSL -o minisign.tar.gz https://github.com/aead/minisign/releases/download/0.12/minisign-linux.tar.gz
-          tar xzf minisign.tar.gz
-          sudo cp "$(find . -name minisign -type f | head -n 1)" /usr/local/bin/minisign
-
-      - name: 下载产物并生成签名
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          mkdir -p assets
-          gh release download "$TAG" --dir assets
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > minisign.key
-          chmod 600 minisign.key
-          for f in assets/DeepSeek*; do
-            [ -f "$f" ] || continue
-            minisign -S -m "$f" -s minisign.key -x "$f.minisig" -t "DeepSeek Harness $TAG" || continue
-            gh release upload "$TAG" "$f.minisig" --clobber
-          done
