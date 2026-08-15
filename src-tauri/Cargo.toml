@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "1.0.1"
+version = "1.0.2"
 description = "DeepSeek Harness Web UI desktop launcher"
 edition = "2021"
 
