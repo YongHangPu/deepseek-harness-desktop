@@ -1,9 +1,13 @@
 # GitHub Actions：跨平台 × 多架构自动构建并发布安装包。
 #
-# 触发方式（推荐用标签）：
-#   1. 先修改 src-tauri/tauri.conf.json 里的 "version"（例如 0.1.1）
-#   2. git tag v0.1.1 && git push origin v0.1.1
-#   3. 构建完成后到 GitHub Releases 确认草稿（releaseDraft: true）并发布
+# 触发方式：
+#   1. 推送 v* 标签（正式发布，推荐）：
+#        a. 先修改 src-tauri/tauri.conf.json 里的 "version"（例如 1.0.1）
+#        b. git tag v1.0.1 && git push origin v1.0.1
+#        c. 构建完成后到 GitHub Releases 确认草稿（releaseDraft: true）并发布
+#   2. 手动触发（Actions 页 Run workflow，用于测试构建）：
+#        填入 tag 输入（默认 v0.0.0-test，重复触发会覆盖同名草稿 Release）；
+#        产物会出现在同名的草稿 Release 里，测试完删除该草稿与标签即可。
 #
 # 产物（全部自动上传到同一个 Release）：
 #   Windows：x64 / x86 / arm64 的 NSIS 安装程序（setup.exe）+ MSI + 便携 zip
@@ -16,6 +20,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release 标签名（仅手动触发时使用）'
+        required: false
+        default: 'v0.0.0-test'
 
 permissions:
   contents: write
@@ -80,7 +89,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          # 标签推送时用标签名；手动触发时用手动输入的 tag（默认 v0.0.0-test）
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
           releaseName: 'DeepSeek Harness __VERSION__'
           releaseBody: |
             由 GitHub Actions 自动构建（Windows / macOS / Linux，含 x64、x86、arm64 架构）。
@@ -112,7 +122,7 @@ jobs:
           $exe = "src-tauri/target/${{ matrix.target }}/release/dsh-desktop.exe"
           $zip = "DeepSeek Harness_${v}_windows-${{ matrix.arch }}.zip"
           Compress-Archive -Path $exe -DestinationPath $zip
-          gh release upload "${{ github.ref_name }}" $zip --clobber
+          gh release upload "${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}" $zip --clobber
 
       - name: 打包 Linux 便携 tar.gz
         if: startsWith(matrix.platform, 'ubuntu')
@@ -129,5 +139,5 @@ jobs:
           cp src-tauri/icons/128x128.png "$pkg/dsh-desktop.png"
           chmod +x "$pkg/dsh-desktop"
           tar czf "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" "$pkg"
-          gh release upload "${{ github.ref_name }}" "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" --clobber
+          gh release upload "${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}" "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" --clobber
 
