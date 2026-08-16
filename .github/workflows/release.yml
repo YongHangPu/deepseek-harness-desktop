@@ -35,13 +35,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ---- Windows ----
+          # ---- Windows（Node 24 起官方不再提供 32 位构建，故无 x86 目标）----
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             arch: x64
-          - platform: windows-latest
-            target: i686-pc-windows-msvc
-            arch: x86
           - platform: windows-latest
             target: aarch64-pc-windows-msvc
             arch: arm64
@@ -83,6 +80,44 @@ jobs:
       - name: 安装 npm 依赖（@tauri-apps/cli）
         run: npm install
 
+      - name: 下载内置便携 Node 运行时（国内镜像优先）
+        shell: bash
+        env:
+          NODE_RUNTIME_VERSION: 24.12.0
+        run: |
+          set -e
+          ver="$NODE_RUNTIME_VERSION"
+          dir="src-tauri/runtime"
+          mkdir -p "$dir"
+          fetch() { # $1=文件名
+            for base in \
+              "https://registry.npmmirror.com/-/binary/node/v$ver" \
+              "https://nodejs.org/dist/v$ver"; do
+              echo "下载 $base/$1"
+              if curl -L --fail --silent --show-error -o "$dir/$1" "$base/$1"; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          case "${{ matrix.platform }}" in
+            windows-latest)
+              fetch "node-v$ver-win-${{ matrix.arch }}.zip"
+              ;;
+            macos-latest)
+              # universal 构建同时内置 Intel 与 Apple Silicon 两套运行时
+              fetch "node-v$ver-darwin-x64.tar.gz"
+              fetch "node-v$ver-darwin-arm64.tar.gz"
+              ;;
+            *)
+              case "${{ matrix.arch }}" in
+                amd64) fetch "node-v$ver-linux-x64.tar.xz" ;;
+                arm64) fetch "node-v$ver-linux-arm64.tar.xz" ;;
+              esac
+              ;;
+          esac
+          ls -lh "$dir"
+
       - name: 构建并发布（NSIS/MSI、dmg、deb/rpm/AppImage）
         id: tauri
         uses: tauri-apps/tauri-action@v0
@@ -120,7 +155,8 @@ jobs:
 
             ## 🚀 使用前提
 
-            - 需要已安装 **Node.js**（程序通过 npx 启动 dsh，首次启动会自动下载）；如未安装，请从 <https://nodejs.org> 安装
+            - **无需预装 Node.js**：安装包内置便携 Node（v24.12.0，仅 64 位）；如系统已有 Node 则优先复用
+            - 首次启动仍需联网：程序会通过 npx 自动下载 dsh 本体（国内网络自动使用 npmmirror 源）；内置 Node 归档损坏或缺失时会自动回退在线下载
 
             ## ⚠️ 已知说明
 
@@ -151,7 +187,8 @@ jobs:
           $v = node -p "require('./package.json').version"
           $exe = "src-tauri/target/${{ matrix.target }}/release/dsh-desktop.exe"
           $zip = "DeepSeek Harness_${v}_windows-${{ matrix.arch }}.zip"
-          Compress-Archive -Path $exe -DestinationPath $zip
+          # 便携包连同内置的 Node 运行时一起打包
+          Compress-Archive -Path $exe, src-tauri/runtime -DestinationPath $zip
           gh release upload "${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}" $zip --clobber
 
       - name: 打包 Linux 便携 tar.gz
@@ -167,6 +204,8 @@ jobs:
           cp "$bin" "$pkg/dsh-desktop"
           cp assets/dsh-desktop.desktop "$pkg/dsh-desktop.desktop"
           cp src-tauri/icons/128x128.png "$pkg/dsh-desktop.png"
+          # 便携包连同内置的 Node 运行时一起打包
+          cp -r src-tauri/runtime "$pkg/runtime"
           chmod +x "$pkg/dsh-desktop"
           tar czf "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" "$pkg"
           gh release upload "${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}" "DeepSeek Harness_${v}_linux-${{ matrix.arch }}.tar.gz" --clobber

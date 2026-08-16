@@ -35,3 +35,8 @@ Desktop.ini
 # ===== 调试输出 =====
 *.err
 
+
+# ===== 内置便携 Node 归档（CI 构建时下载，不入库） =====
+src-tauri/runtime/*
+!src-tauri/runtime/.gitkeep
+

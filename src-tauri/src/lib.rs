@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -71,7 +71,7 @@ fn relaunch_marker_path() -> PathBuf {
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
 
@@ -134,8 +134,9 @@ fn relaunch_self(handle: &AppHandle) {
     let _ = log_line(&format!("自动重启：目标程序 {}", exe.display()));
     set_status(handle, "环境异常，正在自动重启程序…");
     let script = format!(
-        "Invoke-CimMethod -ClassName Win32_Process -MethodName Create \
-         -Arguments @{{CommandLine='\"{}\"'}} | Out-Null",
+        "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create \
+         -Arguments @{{CommandLine='\"{}\"'}}; \
+         if ($r -and $r.ReturnValue -eq 0) {{ exit 0 }} else {{ exit 1 }}",
         exe.display()
     );
     let mut command = Command::new("powershell");
@@ -149,8 +150,8 @@ fn relaunch_self(handle: &AppHandle) {
         let _ = log_line("自动重启失败：WMI 拉起新实例失败，保持后台自动重试");
         return;
     }
-    // 稍候片刻让 WMI 提供方完成创建，再退出旧实例，避免单实例锁竞争。
-    std::thread::sleep(Duration::from_secs(1));
+    // WMI 创建是异步的（由系统提供方完成），立即退出旧实例：旧实例先走，
+    // 新实例随后启动并成为单实例服务端，避免竞争。
     let _ = log_line("自动重启：已请求 WMI 拉起新实例，本进程即将退出");
     handle.exit(0);
 }
@@ -340,8 +341,8 @@ fn startup_inner(handle: AppHandle, interactive: bool) {
                 // 安装）。npx 只按“目录存在”判定缓存可用，被中断的安装留下
                 // 的残缺条目会被静默复用。
                 if plugin_tree_broken() {
-                    // 交互式流程里连续失败时，经任务计划程序重启一个干净谱系的
-                    // 新实例（用户实测“关闭再打开”即恢复）；标记保证只做一次，
+                    // 交互式流程里连续失败时，经 WMI 重启一个干净谱系的新实例
+                    // （用户实测“关闭再打开”即恢复）；标记保证只做一次，
                     // 后台重试轮次继续走“修复 + 重试”路径。
                     #[cfg(target_os = "windows")]
                     if interactive && attempt >= 2 && !SELF_RELAUNCHED.load(Ordering::SeqCst) {
@@ -722,6 +723,217 @@ fn plugin_tree_broken() -> bool {
     text.contains("Cannot find package") || text.contains("plugin tree failed to load")
 }
 
+/// ==================== Node 运行环境（系统 → 内置便携包 → 在线下载） ====================
+/// 便携 Node 的固定版本；升级时改这里并同步 CI 的下载步骤。
+const NODE_VERSION: &str = "24.12.0";
+
+/// Node 来源：System=系统 PATH 里的 node；Local=应用数据目录里的便携 Node；
+/// Missing=系统没有且便携 Node 下载失败（启动时给出明确错误）。
+#[derive(Clone)]
+enum NodeSource {
+    System,
+    Local(PathBuf),
+    Missing,
+}
+
+fn node_arch_suffix() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "x86",
+        _ => "x64",
+    }
+}
+
+/// 官方发行包里的平台名（win / darwin / linux）。
+fn node_platform() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "win",
+        "macos" => "darwin",
+        _ => "linux",
+    }
+}
+
+/// 各平台的归档扩展名与 tar 解压参数。
+fn node_archive_parts() -> (&'static str, &'static [&'static str]) {
+    match std::env::consts::OS {
+        "windows" => ("zip", &["-xf"]),
+        "macos" => ("tar.gz", &["-xzf"]),
+        _ => ("tar.xz", &["-xJf"]),
+    }
+}
+
+/// Node 可执行文件名（Windows 为 node.exe，其余为 node）。
+fn node_bin_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+fn local_node_dir() -> PathBuf {
+    config_dir().join("node").join(format!(
+        "node-v{NODE_VERSION}-{}-{}",
+        node_platform(),
+        node_arch_suffix()
+    ))
+}
+
+/// 解析（并按进程缓存）Node 来源：系统 node 可用则优先用系统；
+/// 否则确保便携 Node 就绪（缺失时从国内镜像下载解压到应用数据目录）。
+fn node_source() -> NodeSource {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<NodeSource> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut probe = Command::new("node");
+            probe
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                probe.creation_flags(0x0800_0000); // 不闪黑色控制台窗口
+            }
+            let system_ok = probe
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if system_ok {
+                return NodeSource::System;
+            }
+            match ensure_local_node() {
+                Some(dir) => NodeSource::Local(dir),
+                None => NodeSource::Missing,
+            }
+        })
+        .clone()
+}
+
+/// 安装包内置的便携 Node 归档可能所在的位置（随 Tauri resources 打包）：
+/// Windows/Linux 在可执行文件同级的 runtime 目录，macOS 在 .app 的
+/// Contents/Resources/runtime。
+fn bundled_node_archive_candidates() -> Vec<PathBuf> {
+    let (ext, _) = node_archive_parts();
+    let name = format!(
+        "node-v{NODE_VERSION}-{}-{}.{ext}",
+        node_platform(),
+        node_arch_suffix()
+    );
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("runtime").join(&name));
+            // macOS：Contents/MacOS/.. → Contents/Resources/runtime
+            candidates.push(dir.join("..").join("Resources").join("runtime").join(&name));
+        }
+    }
+    candidates
+}
+
+/// 解压便携 Node 归档到应用数据目录，成功返回解压后的 Node 目录。
+fn extract_node_archive(archive: &Path) -> Option<PathBuf> {
+    let dir = local_node_dir();
+    let target = config_dir().join("node");
+    let _ = std::fs::create_dir_all(&target);
+    let (_ext, tar_flags) = node_archive_parts();
+    let mut command = Command::new("tar");
+    command.args(tar_flags).arg(archive).arg("-C").arg(&target);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let ok = command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if ok && dir.join(node_bin_name()).is_file() {
+        let _ = log_line(&format!("便携 Node 已就绪：{}", dir.display()));
+        Some(dir)
+    } else {
+        let _ = log_line("便携 Node 解压失败");
+        None
+    }
+}
+
+/// 确保便携 Node 就绪，返回其目录；失败返回 None。
+/// 顺序：已有解压结果 → 安装包内置归档（离线可用）→ 在线下载（国内镜像优先）。
+fn ensure_local_node() -> Option<PathBuf> {
+    let dir = local_node_dir();
+    if dir.join(node_bin_name()).is_file() {
+        return Some(dir);
+    }
+    for archive in bundled_node_archive_candidates() {
+        if archive.is_file() {
+            let _ = log_line(&format!("发现内置便携 Node 归档：{}", archive.display()));
+            if let Some(dir) = extract_node_archive(&archive) {
+                return Some(dir);
+            }
+            // 内置归档损坏等解压失败场景：回退在线下载。
+            let _ = log_line("内置归档解压失败，回退在线下载…");
+            break;
+        }
+    }
+    let _ = log_line("未检测到系统 Node.js，准备下载便携 Node（国内镜像）…");
+    let (ext, _tar_flags) = node_archive_parts();
+    let name = format!(
+        "node-v{NODE_VERSION}-{}-{}.{ext}",
+        node_platform(),
+        node_arch_suffix()
+    );
+    let urls = [
+        format!("https://registry.npmmirror.com/-/binary/node/v{NODE_VERSION}/{name}"),
+        format!("https://nodejs.org/dist/v{NODE_VERSION}/{name}"),
+    ];
+    let archive = config_dir().join(&name);
+    let _ = std::fs::remove_file(&archive);
+    let mut downloaded = false;
+    for url in &urls {
+        let mut command = Command::new("curl");
+        command.args(["-L", "--fail", "--silent", "--show-error", "-o"]);
+        command.arg(&archive).arg(url);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let ok = command
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if ok {
+            downloaded = true;
+            break;
+        }
+        // 非 Windows 且 curl 不可用时，用 wget 再试一次当前源。
+        #[cfg(not(target_os = "windows"))]
+        if !downloaded {
+            let mut fallback = Command::new("wget");
+            fallback.args(["-q", "-O"]).arg(&archive).arg(url);
+            if fallback
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+            {
+                downloaded = true;
+                break;
+            }
+        }
+        let _ = log_line(&format!("便携 Node 下载失败（{url}），尝试下一个源…"));
+    }
+    if !downloaded {
+        let _ = log_line("便携 Node 下载失败：所有源均不可用");
+        return None;
+    }
+    let result = extract_node_archive(&archive);
+    let _ = std::fs::remove_file(&archive);
+    result
+}
+
 /// 在 profile 目录做一次模块解析探测：能 import dsh-llm 说明链接目录可被
 /// Node 正常解析。Ok(true)=成功；Ok(false)=失败；Err=无法执行探测（按就绪处理）。
 fn probe_module_resolution(config: &AppConfig) -> std::io::Result<bool> {
@@ -729,7 +941,16 @@ fn probe_module_resolution(config: &AppConfig) -> std::io::Result<bool> {
     if !profile.is_dir() {
         return Ok(true); // 全新环境：交给 dsh 启动时自建
     }
-    let mut command = Command::new("node");
+    let mut command = match node_source() {
+        NodeSource::System => Command::new("node"),
+        NodeSource::Local(dir) => Command::new(dir.join(node_bin_name())),
+        NodeSource::Missing => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "未检测到 Node.js 环境，且便携 Node 自动下载失败",
+            ))
+        }
+    };
     command
         .arg("--input-type=module")
         .arg("-e")
@@ -788,17 +1009,38 @@ fn dsh_child(config: &AppConfig, extra_args: &[&str]) -> std::io::Result<Child> 
     let workspace = workspace_dir(config);
     let (stdout, stderr) = log_streams(config, &workspace)?;
 
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "npx", "@deepseek-ai/dsh", "web"]);
-        command
-    };
-    #[cfg(not(target_os = "windows"))]
-    let mut command = {
-        let mut command = Command::new("npx");
-        command.args(["@deepseek-ai/dsh", "web"]);
-        command
+    let mut command = match node_source() {
+        NodeSource::System => {
+            #[cfg(target_os = "windows")]
+            {
+                let mut command = Command::new("cmd");
+                // -y：全新机器无缓存时跳过 npx 的安装确认（标准输入为空会卡死）。
+                command.args(["/C", "npx", "-y", "@deepseek-ai/dsh", "web"]);
+                command
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let mut command = Command::new("npx");
+                command.args(["-y", "@deepseek-ai/dsh", "web"]);
+                command
+            }
+        }
+        NodeSource::Local(dir) => {
+            // 便携 Node：直接以 node 运行 npm 的 npx-cli.js（Windows 上还能
+            // 避免 cmd 引号问题），并把 npm 源指向国内镜像，保证国内网络下
+            // 安装 dsh 顺畅。-y 跳过安装确认，避免空标准输入下卡死。
+            let mut command = Command::new(dir.join(node_bin_name()));
+            command.arg(dir.join("node_modules").join("npm").join("bin").join("npx-cli.js"));
+            command.args(["-y", "@deepseek-ai/dsh", "web"]);
+            command.env("npm_config_registry", "https://registry.npmmirror.com");
+            command
+        }
+        NodeSource::Missing => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "未检测到 Node.js 环境，且便携 Node 自动下载失败；请手动安装 Node.js 后重试",
+            ))
+        }
     };
     command.args(extra_args);
     command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
@@ -1224,4 +1466,85 @@ fn restart_server(app: &AppHandle) -> bool {
         }
     });
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 便携包目录名、归档名、二进制名与官方发行版命名一致。
+    #[test]
+    fn portable_node_naming() {
+        let (ext, tar_flags) = node_archive_parts();
+        let expected_platform = if cfg!(target_os = "windows") {
+            "win"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        };
+        let expected_ext = match expected_platform {
+            "win" => "zip",
+            "darwin" => "tar.gz",
+            _ => "tar.xz",
+        };
+        assert_eq!(node_platform(), expected_platform);
+        assert_eq!(ext, expected_ext);
+        assert!(!tar_flags.is_empty());
+        assert_eq!(node_bin_name(), if cfg!(target_os = "windows") { "node.exe" } else { "node" });
+        let dir = local_node_dir();
+        let dir_name = dir.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            dir_name,
+            format!(
+                "node-v{NODE_VERSION}-{expected_platform}-{}",
+                node_arch_suffix()
+            )
+        );
+    }
+
+    /// 下载 URL 必须同时指向国内镜像与官方源，且文件名一致。
+    #[test]
+    fn portable_node_download_urls() {
+        let (ext, _) = node_archive_parts();
+        let name = format!(
+            "node-v{NODE_VERSION}-{}-{}.{ext}",
+            node_platform(),
+            node_arch_suffix()
+        );
+        for url in [
+            format!("https://registry.npmmirror.com/-/binary/node/v{NODE_VERSION}/{name}"),
+            format!("https://nodejs.org/dist/v{NODE_VERSION}/{name}"),
+        ] {
+            assert!(url.ends_with(&name), "URL 应以归档名结尾：{url}");
+            assert!(url.contains(&format!("node-v{NODE_VERSION}")), "URL 版本号错误：{url}");
+        }
+    }
+
+    /// 内置归档候选路径：文件名与官方命名一致，且都位于 runtime 目录内。
+    #[test]
+    fn bundled_node_archive_candidates_match_name() {
+        let (ext, _) = node_archive_parts();
+        let expected = format!(
+            "node-v{NODE_VERSION}-{}-{}.{ext}",
+            node_platform(),
+            node_arch_suffix()
+        );
+        let candidates = bundled_node_archive_candidates();
+        assert!(!candidates.is_empty(), "至少应有一个候选路径");
+        for candidate in &candidates {
+            assert_eq!(
+                candidate.file_name().unwrap().to_string_lossy(),
+                expected,
+                "内置归档文件名与官方命名不一致：{}",
+                candidate.display()
+            );
+            let path_text = candidate.to_string_lossy();
+            assert!(
+                path_text.contains("runtime"),
+                "内置归档应位于 runtime 目录内：{}",
+                candidate.display()
+            );
+        }
+    }
 }
