@@ -85,7 +85,12 @@
         <!-- launch app checkbox -->
         <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchApp)" />
         <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
-        <CustomAction Id="LaunchApplication" Impersonate="yes" FileKey="Path" ExeCommand="[LAUNCHAPPARGS]" Return="asyncNoWait" />
+        <!-- launch app checkbox：经资源管理器（explorer.exe）启动，与 NSIS 版
+             的 ExecShell 行为一致——由 explorer 转交拉起的新进程与双击启动
+             同谱系。实测 msiexec 直接 CreateProcess 拉起的实例（含经 cmd start
+             的间接启动）其子进程会持续出现 Node 模块解析失败，而 explorer
+             谱系可稳定工作；explorer 是 GUI 程序，也不会闪黑色窗口。 -->
+        <CustomAction Id="LaunchApplication" Impersonate="yes" Directory="INSTALLDIR" ExeCommand="explorer.exe &quot;[#Path]&quot;" Return="asyncNoWait" />
 
         <!-- 应用图标二进制：欢迎页/完成页的 Icon 控件引用 -->
         <Binary Id="appIcon" SourceFile="{{icon_path}}" />
@@ -278,6 +283,20 @@
                     <RegistryValue Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="Desktop Shortcut" Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
+            <!-- 程序运行期数据目录（%LOCALAPPDATA%\dsh-desktop）：卸载时删除
+                 运行期产生的日志（含轮转备份 dsh-web.log.old）；目录清空后
+                 一并删除。config.json 等用户配置不在删除范围内，卸载重装后
+                 设置仍然保留。 -->
+            <Directory Id="LocalAppDataFolder">
+                <Directory Id="DshDataFolder" Name="dsh-desktop">
+                    <Component Id="CleanupLogFiles" Guid="*">
+                        <RemoveFile Id="RemoveDshWebLog" Name="dsh-web.log" On="uninstall" />
+                        <RemoveFile Id="RemoveDshWebLogOld" Name="dsh-web.log.old" On="uninstall" />
+                        <RemoveFolder Id="RemoveDshDataFolder" On="uninstall" />
+                        <RegistryValue Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="Data Folder Cleanup" Type="integer" Value="1" KeyPath="yes" />
+                    </Component>
+                </Directory>
+            </Directory>
             <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
                 <Directory Id="INSTALLDIR" Name="{{product_name}}"/>
             </Directory>
@@ -390,6 +409,7 @@
                 Absent="disallow">
 
             <ComponentRef Id="RegistryEntries"/>
+            <ComponentRef Id="CleanupLogFiles"/>
 
             {{#each resource_file_ids as |resource_file_id| ~}}
                 <ComponentRef Id="{{ resource_file_id }}"/>

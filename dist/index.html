@@ -43,6 +43,14 @@
       font-size: 13px; line-height: 1.6; color: #fecaca;
       white-space: pre-wrap; word-break: break-word;
     }
+    #retry {
+      display: none;
+      margin-top: 22px; padding: 9px 26px;
+      background: #4D6BFE; color: #fff;
+      border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #retry:hover { background: #3f5cec; }
   </style>
 </head>
 <body>
@@ -52,6 +60,14 @@
     <p id="status">正在启动 Web UI（npx @deepseek-ai/dsh web）…</p>
     <div class="spinner" id="spinner"></div>
     <div id="error"></div>
+    <button id="retry">重试</button>
   </div>
+  <script>
+    if (window.__TAURI__) {
+      document.getElementById('retry').addEventListener('click', function () {
+        window.__TAURI__.core.invoke('retry_startup');
+      });
+    }
+  </script>
 </body>
 </html>

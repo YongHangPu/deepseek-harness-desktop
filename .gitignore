@@ -31,3 +31,7 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# ===== 调试输出 =====
+*.err
+
